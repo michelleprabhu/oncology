@@ -5,7 +5,8 @@ import json
 import os
 import time
 import asyncio
-from langchain_community.chat_models import ChatOpenAI
+from langchain.chat_models import ChatOpenAI
+
 
 
 def validate_nct_id(nct_id):
