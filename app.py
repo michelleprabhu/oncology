@@ -5,7 +5,7 @@ import json
 import os
 import time
 import asyncio
-import openai  # Using OpenAI API directly
+from langchain.chat_models import ChatOpenAI
 
 # Function to validate NCT ID format
 def validate_nct_id(nct_id):
@@ -30,8 +30,8 @@ async def fetch_trial_criteria(nct_id, session):
     except Exception:
         return None
 
-# Function to parse criteria text using OpenAI API
-async def parse_criteria(criteria_text):
+# Function to parse criteria text using LLM
+async def parse_criteria(llm, criteria_text):
     if not criteria_text or len(criteria_text.strip()) < 50:
         return {"inclusion": [], "exclusion": []}
     prompt = f"""Convert this clinical trial criteria into JSON format:
@@ -39,20 +39,14 @@ async def parse_criteria(criteria_text):
     Input: {criteria_text}
     """
     try:
-        response = openai.Completion.create(
-            engine="text-davinci-003",  # Use GPT-3.5 or another model
-            prompt=prompt,
-            max_tokens=150
-        )
-        result = response.choices[0].text.strip()
-        parsed = json.loads(result)
+        result = await asyncio.to_thread(llm.invoke, prompt)
+        parsed = json.loads(result.content.strip('` \n'))
         return parsed if isinstance(parsed, dict) else {"inclusion": [], "exclusion": []}
-    except Exception as e:
-        st.error(f"Error parsing criteria: {e}")
+    except:
         return {"inclusion": [], "exclusion": []}
 
 # Function to correlate patients with trials
-async def correlate_patient_with_trial(patient_info, criterion):
+async def correlate_patient_with_trial(llm, patient_info, criterion):
     prompt = f"""Does the patient match the criterion?
     **Patient Info:**
     - Primary Diagnosis: {patient_info['primary_diagnosis']}
@@ -63,20 +57,15 @@ async def correlate_patient_with_trial(patient_info, criterion):
     Answer with 'Yes' or 'No'.
     """
     try:
-        response = openai.Completion.create(
-            engine="text-davinci-003",  # Use GPT-3.5 or another model
-            prompt=prompt,
-            max_tokens=10
-        )
-        return "Yes" if "yes" in response.choices[0].text.lower() else "No"
-    except Exception as e:
-        st.error(f"Error correlating patient: {e}")
+        result = await asyncio.to_thread(llm.invoke, prompt)
+        return "Yes" if "yes" in result.content.lower() else "No"
+    except:
         return "No"
 
 st.set_page_config(page_title="Patient Trial Eligibility Checker", page_icon="🩺", layout="wide")
 col1, col2 = st.columns([1, 6])
 with col1:
-    st.image("Mool.png", width=150)
+    # st.image("Mool.png", width=150)  # Removed this line
 with col2:
     st.markdown("<h1>Patient Trial Eligibility Checker</h1>", unsafe_allow_html=True)
 
@@ -85,7 +74,6 @@ with st.spinner("Authenticating Mool AI agent..."):
     if not openai_api_key:
         st.error("API_KEY not found.")
         st.stop()
-    openai.api_key = openai_api_key  # Set OpenAI API key
     time.sleep(3)
 st.success("Authentication Successful")
 
@@ -98,6 +86,7 @@ if len(uploaded_files) >= 3:
     icd_dict = dict(zip(icd_codes_df['ICD Code'], icd_codes_df['Disease Name']))
     
     selected_patient = st.selectbox("Select Patient Name", patient_df['Patient Name'].tolist())
+    llm = ChatOpenAI(openai_api_key=openai_api_key, model="gpt-4", temperature=0.1)
 
     if st.button("Check Eligibility"):
         st.write("Checking eligibility...")
@@ -113,7 +102,7 @@ if len(uploaded_files) >= 3:
             
             for nct_id, criteria_text in zip(trial_df['NCT Number'], criteria_data):
                 if criteria_text:
-                    parsed_criteria = await parse_criteria(criteria_text)
+                    parsed_criteria = await parse_criteria(llm, criteria_text)
                     patient_info = {
                         'primary_diagnosis': icd_dict.get(patient_df[patient_df['Patient Name'] == selected_patient].iloc[0]['Primary Diagnosis'], 'Unknown'),
                         'secondary_diagnosis': icd_dict.get(patient_df[patient_df['Patient Name'] == selected_patient].iloc[0]['Secondary Diagnosis'], 'Unknown'),
@@ -122,7 +111,7 @@ if len(uploaded_files) >= 3:
                     }
                     
                     matches = sum(
-                        await correlate_patient_with_trial(patient_info, c) == "Yes"
+                        await correlate_patient_with_trial(llm, patient_info, c) == "Yes"
                         for c in parsed_criteria['inclusion']
                     )
                     
